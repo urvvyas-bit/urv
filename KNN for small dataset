@@ -1,0 +1,174 @@
+'Importieren aller benötigten Bibliotheken'
+import pybaselines.whittaker as wtt
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import sptool as sp
+import re
+import timeit
+
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+#-------------------------------------------------------
+
+'''Die Dateiennamen werden über den os.listdir-Befehl aus dem Ordner data2 aufgelistet, 
+um sie im nächsten Schritt auszulesen.
+Es werden leere Listen angelegt in denen am Ende die Spektralbereiche des Chlors 
+und die wahren Chloridgehalte gespeichert werden'''
+dateien = os.listdir("data2")
+intensität1 = []
+cl_gehalt1 = []
+
+
+'''Einlesen der Daten mithilfe eines for-loops über pandas, da csv Dateien mit diesem Tool 
+am einfachsten mit Definition der Trennzeichen und der Dezimaltrennzeichen eingelesen 
+werden können. Anschließend werden sie an Numpy übergeben, um Zeilen/Spalten einfacher 
+aufzurufen und verschiedene Berechnungen (z.B. Mittelwertermittlung) durchzuführen.
+Über den ersten for-loop werden die Dateien duchgelaufen und über den zweiten die einzelnen
+Spalten der Dateien, welche die Intensitäten beinhalten. 
+Die Wellenlängen werden in einem anderen Container als die Intensitäten gespeichert.
+Zum Schluss wird aus dem Dateinamen der wahre Chloridgehalt rausgelesen und dieser wird
+mit der Anzahl der Messpunkte multipliziert und dem Container cl_gehalt1 angehängt.'''
+for datei in dateien:
+    dataframe = pd.read_csv("data2/" + datei,
+                             sep="\t",
+                             decimal=",",
+                             header= None,)
+    dataframenp = dataframe.to_numpy()
+    x_achse = dataframenp[:,0]
+    spalten = np.shape(dataframenp)[1]
+    spalten = list(range(1,spalten))
+    for n in spalten:
+        y_achse = dataframenp[:,n]
+        
+        '''Rausfiltern des Chloridpeaks und Abziehen des Untergrunds mit dem 
+        wtt.arpls-Befehl'''
+        x,y=sp.cut(x_achse,y_achse, 836, 839)
+        bg=wtt.arpls(y)
+        y=y-bg[0]
+        
+        '''Speichern des Spektralbereichs in der Liste intensität1'''
+        intensität1.append(y)
+        
+    '''Rausfiltern des Chlorgehalts aus dem Dateinamen'''
+    icols = len(dataframe.columns)-1
+    regex = re.compile(r'\d+')
+    zahlen = regex.findall(datei)
+    chlorgehalt = float(zahlen[0]) + float(zahlen[1])/(10**len(zahlen[1]))
+    cl_gehalt1.extend([chlorgehalt]*(icols))
+    
+print("Ende der Schleife")
+
+#%%
+'''Übergabe der Listen intensität1 und cl_gehalt1 an NumPy. Skalierung der Daten mit Hilfe
+von MinMaxScaler(). Die Scaler müssen zunächst auf die Daten gefittet werden und werden 
+über transform anschließend auf die Daten angewendet.
+Dann werden die Daten in Trainings- und Validierungsdaten aufgeteilt.'''
+
+intensität1 = np.array(intensität1)
+cl_gehalt1 = np.array(cl_gehalt1)
+
+scalerXCL1, scalerYCL1 = MinMaxScaler(), MinMaxScaler()   
+
+x_scl1 = scalerXCL1.fit_transform(intensität1)
+y_scl1 = scalerYCL1.fit_transform(cl_gehalt1.reshape(-1, 1))
+
+X_train1, X_val1, y_train1, y_val1 = train_test_split(x_scl1, y_scl1, 
+                                                    test_size=0.2, 
+                                                    random_state=92,
+                                                    shuffle=True)
+
+#%% 
+
+'''Aufbau des neuronalen Netzwerks mit verschiedenen Schichten'''
+
+model1 = Sequential()
+
+model1.add(Dense(64, input_dim=29, activation='relu'))
+model1.add(Dropout(0.2))
+# model1.add(Dense(32, activation='relu'))
+# model1.add(Dropout(0.2))
+model1.add(Dense(1, activation='linear'))
+
+model1.compile(loss='mse', optimizer='adam', metrics=['mse'])
+
+history1 = model1.fit(X_train1, y_train1, 
+                        epochs=100, 
+                        validation_data=(X_val1, y_val1)) 
+
+'Plotten der Verlustfunktionen'
+fig, ax =plt.subplots(figsize=(7,5))
+ax.plot(history1.history['loss'])
+ax.plot(history1.history['val_loss'])
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_ylim(0,0.1)
+ax.set_xlabel('epochs', horizontalalignment='right', x=1.0)
+ax.set_ylabel('Verlustscore', horizontalalignment='right', y=1.0)
+ax.legend(['loss','val_loss'])
+ax.set_title('random split = 92')
+
+#%% 3
+
+'''Um die Zeiten für den Vergleich der beiden Methoden aufzunehmen wird mit dem Tool 
+timeit die Zeit gestoppt'''
+start_ki1 = timeit.default_timer()
+
+'''Testen des Modells über eine Bestimmung der Werte mit predict. Alle Messpunkte werden
+hier übergeben. Es wird ein skalierter Wert ausgegeben, welcher mit Hilfe von 
+inverse_transform wieder umgewandelt werden muss.'''
+punkte = list(range(len(intensität1)))
+prediction = []
+for n in punkte:
+    p = scalerYCL1.inverse_transform(model1.predict(x_scl1[n,:].reshape(1,-1)))
+    prediction.append(p)
+    print(n, end=' ')
+    
+prednp = np.stack(prediction, axis=1)
+
+'''Berechnung des gemittelten Chloridgehalts aus all den Messpunkten für einen Datensatz,
+der mit predict ermittelt wurde. Da die Datensätze hier verschiedene 
+Berechnung der Standardabweichung zwischen allen Messpunkten
+Speichern des tatsächlichen Chlorgehalts in x_chlor0'''
+
+meanwerte1 = [np.mean(prednp[:,0:169]),
+              np.mean(prednp[:,169:338]),
+              np.mean(prednp[:,338:507]),
+              np.mean(prednp[:,507:676]),
+              np.mean(prednp[:,676:845]),
+              np.mean(prednp[:,845:1014]),
+              np.mean(prednp[:,1014:1183]),
+              np.mean(prednp[:,1183:1352])]
+               
+abweichung1 = [np.std(prednp[:,0:169]),
+               np.std(prednp[:,169:338]),
+               np.std(prednp[:,338:507]),
+               np.std(prednp[:,507:676]),
+               np.std(prednp[:,676:845]),
+               np.std(prednp[:,845:1014]),
+               np.std(prednp[:,1014:1183]),
+               np.std(prednp[:,1183:1352])]
+
+x_chlor1 = [cl_gehalt1[0],
+            cl_gehalt1[169],
+            cl_gehalt1[338],
+            cl_gehalt1[507],
+            cl_gehalt1[676],
+            cl_gehalt1[845],
+            cl_gehalt1[1014],
+            cl_gehalt1[1183]]
+
+'Gegenüberstellung der ermittelten Werte und des tatsächlichen Chloridgehalts'
+fig, ax =plt.subplots(figsize=(5,5))
+ax.errorbar(x_chlor1, meanwerte1, abweichung1, linestyle='None', marker="x", ecolor='red')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_xlabel('Ist-Chlorgehalt [M-%]', horizontalalignment='right', x=1.0)
+ax.set_ylabel('ermittelter Chlorgehalt [M-%]', horizontalalignment='right', y=1.0)
+
+'Stoppen der Zeit und Ausgabe der Berechnungszeit'
+stop_ki1 = timeit.default_timer()
