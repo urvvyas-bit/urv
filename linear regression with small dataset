@@ -1,0 +1,127 @@
+'Importieren aller benötigten Bibliotheken'
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import sptool as sp
+import re
+from scipy import stats
+import timeit
+#-------------------------------------------------------
+
+'''Die Dateiennamen werden über den os.listdir-Befehl aus dem Ordner data2 aufgelistet, 
+um sie im nächsten Schritt auszulesen.
+Es werden leere Listen angelegt in denen am Ende die Intensitäten der Chloridpeaks 
+und die wahren Chloridgehalte gespeichert werden'''
+dateien1 = os.listdir("data2")
+intensität0 = []
+cl_gehalt0 = []
+
+
+'''
+Einlesen der Daten mithilfe eines for-loops über pandas, da csv Dateien mit diesem Tool 
+am einfachsten mit Definition der Trennzeichen und der Dezimaltrennzeichen eingelesen 
+werden können. Anschließend werden sie an Numpy übergeben, um Zeilen/Spalten einfacher 
+aufzurufen und verschiedene Berechnungen (z.B. Mittelwertermittlung) durchzuführen.
+Über den ersten for-loop werden die Dateien duchgelaufen und über den zweiten die einzelnen
+Spalten der Dateien, welche die Intensitäten beinhalten. 
+Die Wellenlängen werden in einem anderen Container als die Intensitäten gespeichert.
+Zum Schluss wird aus dem Dateinamen der wahre Chloridgehalt rausgelesen und dieser wird
+mit der Anzahl der Messpunkte multipliziert und dem Container cl_gehalt0 angehängt.
+
+'''
+for datei in dateien1:
+    
+    dataframe = pd.read_csv("data2/" + datei,
+                             sep="\t",
+                             decimal=",",
+                             header= None,)
+    dataframenp = dataframe.to_numpy()
+    x_achse = dataframenp[:,0]
+    spalten = np.shape(dataframenp)[1]
+    spalten = list(range(1,spalten))
+    for n in spalten:
+        y_achse = dataframenp[:,n]
+        #plt.plot(x_achse, y_achse)
+        
+        '''Rausfiltern des Chloridpeaks und Abziehen des Untergrunds entweder mit dem 
+        suv-Befehl oder bg_lin'''
+        x,y=sp.cut(x_achse,y_achse, 836, 839)   
+        y=sp.suv(x,y,5,5)                       
+        #y=sp.bg_lin(x,y,5,5)
+        peak = sp.peak_max(y,12,8)              
+        
+        '''Speichern der max Peaks in der Liste intensitäten0'''
+        intensität0.append(peak)
+        
+    '''Rausfiltern des Chlorgehalts aus dem Dateinamen'''
+    regex = re.compile(r'\d+')
+    zahlen = regex.findall(datei)
+    chlorgehalt = float(zahlen[0]) + float(zahlen[1])/(10**len(zahlen[1]))
+    cl_gehalt0.extend([chlorgehalt]*(len(dataframe.columns)-1))
+    
+print("Ende der Schleife")
+
+'Erstellen der Linearen Regression'
+reg=stats.linregress(cl_gehalt0, intensität0)
+
+
+
+'''Ermittlung der Chloridgehalte, indem die Intensitäten in der Regressionsgleichung 
+eingesetzt werden. Die Werte für die Gleichung werden über den linregress-Befehl ermittelt.
+Der Kehrwert des ersten Wertes ist die Steigung und der Kehrwert multipliziert mit dem 
+zweiten Wert ergibt den y-Achsenabschnitt'''
+intensität0 = np.array(intensität0)
+
+'''Um die Zeiten für den Vergleich der beiden Methoden aufzunehmen wird mit dem Tool 
+timeit die Zeit gestoppt'''
+start_lr1= timeit.default_timer()
+
+cl_ermittelt = intensität0*1/reg[0]-1/reg[0]*reg[1]
+
+'''werden in stats.linregress-Funktion für den x-Wert die Intensitäten und den y-Wert die
+Zielwerte (wahren Chloridgehalte) wird folgende Funktion als Regressionsgleichung benutzt:'''
+#cl_ermittelt = intensität0*reg[0]+reg[1]
+
+'''Berechnung des gemittelten Chloridgehalts aus all den Messpunkten für einen Datensatz,
+der mit der Regressionsgleichung ermittelt wurde.
+Berechnung der Standardabweichung zwischen allen Messpunkten
+Speichern des tatsächlichen Chlorgehalts in x_chlor0'''
+meanwerte0 = [np.mean(cl_ermittelt[0:169]),
+              np.mean(cl_ermittelt[169:338]),
+              np.mean(cl_ermittelt[338:507]),
+              np.mean(cl_ermittelt[507:676]),
+              np.mean(cl_ermittelt[676:845]),
+              np.mean(cl_ermittelt[845:1014]),
+              np.mean(cl_ermittelt[1014:1183]),
+              np.mean(cl_ermittelt[1183:1352])]
+
+abweichung0 = [np.std(cl_ermittelt[0:169]),
+              np.std(cl_ermittelt[169:338]),
+              np.std(cl_ermittelt[338:507]),
+              np.std(cl_ermittelt[507:676]),
+              np.std(cl_ermittelt[676:845]),
+              np.std(cl_ermittelt[845:1014]),
+              np.std(cl_ermittelt[1014:1183]),
+              np.std(cl_ermittelt[1183:1352])]
+
+x_chlor0 = [cl_gehalt0[0],
+           cl_gehalt0[169],
+           cl_gehalt0[338],
+           cl_gehalt0[507],
+           cl_gehalt0[676],
+           cl_gehalt0[845],
+           cl_gehalt0[1014],
+           cl_gehalt0[1183]]
+
+'Gegenüberstellung der ermittelten Werte und des tatsächlichen Chloridgehalts'
+fig, ax =plt.subplots(figsize=(5,5))
+ax.errorbar(x_chlor0, meanwerte0, abweichung0, linestyle='None', marker="x", ecolor='red')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_xlabel('Ist-Chlorgehalt [M-%]', horizontalalignment='right', x=1.0)
+ax.set_ylabel('ermittelter Chlorgehalt [M-%]', horizontalalignment='right', y=1.0)
+
+'Stoppen der Zeit und Ausgabe der Berechnungszeit'
+stop_lr1 = timeit.default_timer()
+print('Time: ', stop_lr1 - start_lr1)  
